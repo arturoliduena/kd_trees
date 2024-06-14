@@ -1,7 +1,18 @@
 #include <vector>
 #include <iostream>
+#include <tuple>
+#include <fstream>
+#include <cstdlib>
+#include <random>
 
 using namespace std;
+
+// Structure to represent a k-dimensional point
+struct Point
+{
+  vector<double> coordinates;
+  Point(int k) : coordinates(k, -1.0) {} // Initialize with -1 to indicate unspecified coordinates
+};
 
 template <typename T>
 class kdtree
@@ -36,6 +47,10 @@ class kdtree
   node *insert(node *p, const T &key, int d)
   {
     d = d % dim;
+    if (type == Relaxed)
+    {
+      d = rand() % dim;
+    }
 
     if (p == nullptr)
       return new node(key, d);
@@ -48,45 +63,59 @@ class kdtree
     return p;
   }
 
-  bool match(const T &key, vector<int *> q) const
+  bool match(const T &key, vector<double> q) const
   {
     for (int i = 0; i < dim; i++)
     {
-      if (q[i] == nullptr)
+      if (q[i] == -1.0)
         continue;
-      else if (*q[i] != key[i])
+      else if (q[i] != key[i])
         return false;
     }
 
     return true;
   }
 
-  void partial_match(node *p, vector<int *> &q, vector<T> &L) const
+  int partial_match(node *p, vector<double> &q, vector<T> &L) const
   {
     if (p == nullptr)
-      return;
+      return 0;
+
+    int visitedNodes = 1;
+
     // checks whether the current key matches the restrictions imposed by q. In that case, the key is added to the result list L.
     if (match(p->key, q))
     {
       L.push_back(p->key);
     }
 
-    if (q[p->discr] == nullptr)
+    if (q[p->discr] == -1.0)
     {
-      partial_match(p->left, q, L);
-      partial_match(p->right, q, L);
+      visitedNodes += partial_match(p->left, q, L);
+      visitedNodes += partial_match(p->right, q, L);
     }
     else
     {
-      if (*q[p->discr] < p->key[p->discr])
-        partial_match(p->left, q, L);
+      if (q[p->discr] < p->key[p->discr])
+        visitedNodes += partial_match(p->left, q, L);
       else
-        partial_match(p->right, q, L);
+        visitedNodes += partial_match(p->right, q, L);
     }
+
+    return visitedNodes;
   }
 
 public:
-  kdtree(int K) : root(nullptr), dim(K)
+  // Define an enum for the type property
+  enum Type
+  {
+    Standard,
+    Relaxed
+  };
+
+  Type type;
+
+  kdtree(int K, Type t) : root(nullptr), dim(K), type(t)
   {
   }
   ~kdtree()
@@ -97,24 +126,24 @@ public:
   {
     root = insert(root, key, 0);
   }
-  vector<T> partial_match(vector<int *> q)
+  tuple<int, vector<T>> partial_match(vector<double> q)
   {
     vector<T> L;
-    partial_match(root, q, L);
+    int visitedNodes = partial_match(root, q, L);
 
-    return L;
+    return make_tuple(visitedNodes, L);
   }
   void printNode(const string &prefix, const node *n, bool isLeft)
   {
     if (n != nullptr)
     {
-      std::cout << prefix;
+      cout << prefix;
 
-      std::cout << (isLeft ? "├──" : "└──");
+      cout << (isLeft ? "├──" : "└──");
 
       // print the value of the node
-      std::cout << n->discr << " - "
-                << "(" << n->key[0] << " , " << n->key[1] << ")" << std::endl;
+      cout << n->discr << " - "
+           << "(" << n->key[0] << " , " << n->key[1] << ", ... )" << endl;
 
       // enter the next tree level - left and right branch
       printNode(prefix + (isLeft ? "│   " : "    "), n->left, true);
@@ -128,29 +157,119 @@ public:
   }
 };
 
-int main()
+// Function to generate random points in [0, 1]^k
+vector<Point> generateRandomPoints(int n, int k)
 {
-  // The following code creates a 2D k-d tree and inserts the points
-  vector<vector<int>> points = {{6, 4}, {5, 2}, {4, 7}, {8, 6}, {2, 1}, {9, 3}, {2, 8}, {5, 4}, {5, 8}};
-  kdtree<vector<int>> k(2);
+  vector<Point> points;
 
-  for (auto p : points)
-    k.insert(p);
+  // Initialize random number generator
+  random_device rd;
+  mt19937 gen(rd());
+  uniform_real_distribution<> dis(0.0, 1.0);
 
-  k.printTree();
-
-  vector<int *> q;
-  // Adding integers and nulls to the vector
-  q.push_back(new int(5)); // Adding an integer
-  q.push_back(nullptr);    // Adding a null pointer
-
-  cout << "Partial match: " << endl;
-
-  vector<vector<int>> L = k.partial_match(q);
-  for (auto p : L)
+  for (int i = 0; i < n; ++i)
   {
-    cout << "(" << p[0] << ", " << p[1] << ")" << endl;
+    Point point(k);
+    for (int j = 0; j < k; ++j)
+    {
+      point.coordinates[j] = dis(gen);
+    }
+    points.push_back(point);
   }
+
+  return points;
+}
+
+// Function to generate partial match queries with unspecified points
+vector<Point> generatePartialMatchQueries(int q, int k, int s)
+{
+  vector<Point> queries = generateRandomPoints(q, k);
+  random_device rd;
+  mt19937 gen(rd());
+  uniform_int_distribution<> dis(0, k - 1);
+  for (auto &query : queries)
+  {
+    // Set k - s coordinates to -1 (unspecified)
+    int unspecified = 0;
+    while (unspecified < k - s)
+    {
+      int index = dis(gen);
+      if (query.coordinates[index] != -1.0)
+      {
+        query.coordinates[index] = -1.0;
+        unspecified++;
+      }
+    }
+  }
+
+  return queries;
+}
+
+double calculateAverage(const vector<int> &data)
+{
+  return accumulate(data.begin(), data.end(), 0.0) / data.size();
+}
+
+double calculateVariance(const vector<int> &data, double mean)
+{
+  double variance = 0.0;
+  for (int value : data)
+  {
+    variance += (value - mean) * (value - mean);
+  }
+  return variance / data.size();
+}
+
+int main(int argc, char *argv[])
+{
+  if (argc != 6)
+  {
+    cerr << "Usage: " << argv[0] << " <t> <n> <k> <q> <s>" << endl;
+    return 1;
+  }
+
+  string t = argv[1];    // Type of the tree (standard or relaxed)
+  int n = stoi(argv[2]); // Number of points
+  int k = stoi(argv[3]); // Dimensionality
+  int q = stoi(argv[4]); // Number of partial match queries
+  int s = stoi(argv[5]); // Number of specified coordinates in the query
+
+  vector<int> visitedNodesResults;
+  // Generate random points
+  vector<Point> points = generateRandomPoints(n, k);
+
+  kdtree<vector<double>> kd_tree(k, kdtree<vector<double>>::Standard);
+
+  if (t == "relaxed")
+  {
+    kd_tree.type = kdtree<vector<double>>::Relaxed;
+  }
+
+  for (const auto &point : points)
+    kd_tree.insert(point.coordinates);
+
+  // kd_tree.printTree();
+
+  // Generate q partial match queries with unspecified points
+  vector<Point> queries = generatePartialMatchQueries(q, k, s);
+
+  // Perform each query and count visited nodes
+  for (const auto &query : queries)
+  {
+    // Perform the partial match query
+    auto result = kd_tree.partial_match(query.coordinates);
+    int visitedNodes = get<0>(result);
+    visitedNodesResults.push_back(visitedNodes);
+    vector<vector<double>> matches = get<1>(result);
+  }
+
+  // Calculate statistical measures
+  double average = calculateAverage(visitedNodesResults);
+  double variance = calculateVariance(visitedNodesResults, average);
+
+  // Output the results in a format that can be parsed by the shell script
+  cout << "Average visited nodes: " << average << endl;
+  cout << "Variance: " << variance << endl;
 
   return 0;
 }
